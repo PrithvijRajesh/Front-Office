@@ -102,6 +102,8 @@ class NBAGameSummary:
 
     clutch_game: bool
     comeback_game: bool
+    post_season: bool
+    post_season_impact: bool
 
     home_impact: TeamImpactStats
     away_impact: TeamImpactStats

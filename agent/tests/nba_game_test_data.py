@@ -17,6 +17,8 @@ warriors_clutch_comeback = NBAGameSummary(
     total_score=233,
     clutch_game=True,
     comeback_game=True,
+    post_season=True,
+    post_season_impact = False,
 
     home_impact=TeamImpactStats(
         top_points=38,
@@ -133,6 +135,8 @@ pistons_blowout_loss = NBAGameSummary(
     total_score=224,
     clutch_game=False,
     comeback_game=False,
+    post_season=False,
+    post_season_impact = True,
 
     home_impact=TeamImpactStats(
         top_points=41,
@@ -249,6 +253,8 @@ nets_hawks_shootout = NBAGameSummary(
     total_score=265,
     clutch_game=True,
     comeback_game=False,
+    post_season=True,
+    post_season_impact = False,
 
     home_impact=TeamImpactStats(
         top_points=39,

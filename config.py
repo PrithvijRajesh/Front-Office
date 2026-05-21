@@ -1,25 +1,10 @@
-#To save preferences such as favorite leagues, teams, and players to follow. Also for any other preferences such as what is considered close game or high stat line.
-
-'''
-What is important to me in sports games, brainstorming
-
-For NBA
-Favorite team = Warriors and Pistons
-Close games = came down to the wire, will use NBA defintion of clutch game, any game where score is within 5 points or less within last 5 minutes of 4th quarter
-Comeback wins = team was down by over 15 points at some point in the game but ended up winning
-High point games = player scored over 30 points,
-High scoring games = total score over 240 points
-Games with Playoff implications
-Post season games
-
-
-'''
+# Preferences: favorite teams/players, game thresholds, and learned config loader.
 
 from dataclasses import dataclass
 from typing import List
 
-@dataclass
 
+@dataclass
 class NBAConfig:
     favorite_teams: List[str]
     favorite_players: List[str]
@@ -27,5 +12,20 @@ class NBAConfig:
     comeback_deficit: int
     high_points: int
     high_total: int
-    
 
+
+DEFAULT_NBA_CONFIG = NBAConfig(
+    favorite_teams=[],
+    favorite_players=[],
+    clutch_margin=5,
+    comeback_deficit=15,
+    high_points=30,
+    high_total=240,
+)
+
+
+def load_nba_config():
+    """Config from user preference file (manual + learned from stat views)."""
+    from preferences.learning import build_nba_config
+
+    return build_nba_config()

@@ -12,6 +12,9 @@ from models.nba_games import (
 
 baseURL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
 
+CLUTCH_MARGIN = 5
+COMEBACK_DEFICIT = 15
+
 
 def fetch_nba_data():
     url = f"{baseURL}/scoreboard"
@@ -27,13 +30,310 @@ def fetch_summary(event_id):
     return response.json()
 
 
-def map_to_nba_game_summary(event, summary):
-    """
-    Turn ESPN event + summary JSON into one NBAGameSummary.
-    Fill in the TODO sections as you go.
-    """
+def parse_minutes(minutes_string):
+    if not minutes_string or minutes_string == "--":
+        return 0.0
+    if ":" in minutes_string:
+        parts = minutes_string.split(":")
+        return int(parts[0]) + int(parts[1]) / 60.0
+    return float(minutes_string)
 
-    # --- From scoreboard event: teams and scores ---
+
+def parse_made_attempted(display_value):
+    if not display_value or "-" not in display_value:
+        return 0, 0
+    made, attempted = display_value.split("-")
+    return int(made), int(attempted)
+
+
+def stat_index(keys, name):
+    return keys.index(name)
+
+
+def find_players_block(summary, team_id):
+    for block in summary.get("boxscore", {}).get("players") or []:
+        if str(block["team"]["id"]) == str(team_id):
+            return block
+    return None
+
+
+def build_team_impact(players_block):
+    empty = TeamImpactStats(
+        top_points=0,
+        top_rebounds=0,
+        top_assists=0,
+        top_steals=0,
+        top_blocks=0,
+        top_scorer="",
+        top_rebounder="",
+        top_assister="",
+        top_stealer="",
+        top_blocker="",
+        impact_points=0.0,
+        impact_points_player="",
+        impact_rebounds=0.0,
+        impact_rebounds_player="",
+        impact_assists=0.0,
+        impact_assists_player="",
+    )
+    if not players_block:
+        return empty
+
+    athletes = players_block["statistics"][0]["athletes"]
+    keys = players_block["statistics"][0]["keys"]
+    i_pts = stat_index(keys, "points")
+    i_reb = stat_index(keys, "rebounds")
+    i_ast = stat_index(keys, "assists")
+    i_stl = stat_index(keys, "steals")
+    i_blk = stat_index(keys, "blocks")
+    i_min = stat_index(keys, "minutes")
+
+    top_points = -1
+    top_rebounds = -1
+    top_assists = -1
+    top_steals = -1
+    top_blocks = -1
+    top_scorer = ""
+    top_rebounder = ""
+    top_assister = ""
+    top_stealer = ""
+    top_blocker = ""
+
+    best_points_rate = -1.0
+    best_rebounds_rate = -1.0
+    best_assists_rate = -1.0
+    impact_points_player = ""
+    impact_rebounds_player = ""
+    impact_assists_player = ""
+
+    for player in athletes:
+        if player.get("didNotPlay"):
+            continue
+
+        name = player["athlete"]["displayName"]
+        stats = player["stats"]
+        points = int(stats[i_pts])
+        rebounds = int(stats[i_reb])
+        assists = int(stats[i_ast])
+        steals = int(stats[i_stl])
+        blocks = int(stats[i_blk])
+        minutes = parse_minutes(stats[i_min])
+
+        if points > top_points:
+            top_points = points
+            top_scorer = name
+        if rebounds > top_rebounds:
+            top_rebounds = rebounds
+            top_rebounder = name
+        if assists > top_assists:
+            top_assists = assists
+            top_assister = name
+        if steals > top_steals:
+            top_steals = steals
+            top_stealer = name
+        if blocks > top_blocks:
+            top_blocks = blocks
+            top_blocker = name
+
+        if minutes > 0:
+            points_rate = points / minutes
+            rebounds_rate = rebounds / minutes
+            assists_rate = assists / minutes
+
+            if points_rate > best_points_rate:
+                best_points_rate = points_rate
+                impact_points_player = name
+            if rebounds_rate > best_rebounds_rate:
+                best_rebounds_rate = rebounds_rate
+                impact_rebounds_player = name
+            if assists_rate > best_assists_rate:
+                best_assists_rate = assists_rate
+                impact_assists_player = name
+
+    if top_points < 0:
+        top_points = 0
+
+    return TeamImpactStats(
+        top_points=top_points,
+        top_rebounds=max(top_rebounds, 0),
+        top_assists=max(top_assists, 0),
+        top_steals=max(top_steals, 0),
+        top_blocks=max(top_blocks, 0),
+        top_scorer=top_scorer,
+        top_rebounder=top_rebounder,
+        top_assister=top_assister,
+        top_stealer=top_stealer,
+        top_blocker=top_blocker,
+        impact_points=best_points_rate if best_points_rate >= 0 else 0.0,
+        impact_points_player=impact_points_player,
+        impact_rebounds=best_rebounds_rate if best_rebounds_rate >= 0 else 0.0,
+        impact_rebounds_player=impact_rebounds_player,
+        impact_assists=best_assists_rate if best_assists_rate >= 0 else 0.0,
+        impact_assists_player=impact_assists_player,
+    )
+
+
+def build_shooting_efficiency(players_block):
+    result = {
+        "most_efficient_fg": 0.0,
+        "most_efficient_fga": 0,
+        "most_efficient_fgm": 0,
+        "most_efficient_fg_player": "",
+        "most_efficient_3p": 0.0,
+        "most_efficient_3pa": 0,
+        "most_efficient_3pm": 0,
+        "most_efficient_3p_player": "",
+        "least_efficient_fg": 0.0,
+        "least_efficient_fga": 0,
+        "least_efficient_fgm": 0,
+        "least_efficient_fg_player": "",
+        "least_efficient_3p": 0.0,
+        "least_efficient_3pa": 0,
+        "least_efficient_3pm": 0,
+        "least_efficient_3p_player": "",
+        "least_efficient_points": 0.0,
+        "least_efficient_points_player": "",
+    }
+    if not players_block:
+        return result
+
+    keys = players_block["statistics"][0]["keys"]
+    i_pts = stat_index(keys, "points")
+    i_fg = stat_index(keys, "fieldGoalsMade-fieldGoalsAttempted")
+    i_tp = stat_index(keys, "threePointFieldGoalsMade-threePointFieldGoalsAttempted")
+    i_min = stat_index(keys, "minutes")
+
+    best_fg_pct = -1.0
+    worst_fg_pct = 101.0
+    best_tp_pct = -1.0
+    worst_tp_pct = 101.0
+    worst_points_rate = 999.0
+
+    for player in players_block["statistics"][0]["athletes"]:
+        if player.get("didNotPlay"):
+            continue
+
+        name = player["athlete"]["displayName"]
+        stats = player["stats"]
+        fgm, fga = parse_made_attempted(stats[i_fg])
+        tpm, tpa = parse_made_attempted(stats[i_tp])
+        minutes = parse_minutes(stats[i_min])
+        points = int(stats[i_pts])
+
+        if fga >= 5:
+            fg_pct = fgm / fga * 100
+            if fg_pct > best_fg_pct:
+                best_fg_pct = fg_pct
+                result["most_efficient_fg"] = fg_pct
+                result["most_efficient_fga"] = fga
+                result["most_efficient_fgm"] = fgm
+                result["most_efficient_fg_player"] = name
+            if fg_pct < worst_fg_pct:
+                worst_fg_pct = fg_pct
+                result["least_efficient_fg"] = fg_pct
+                result["least_efficient_fga"] = fga
+                result["least_efficient_fgm"] = fgm
+                result["least_efficient_fg_player"] = name
+
+        if tpa >= 3:
+            tp_pct = tpm / tpa * 100
+            if tp_pct > best_tp_pct:
+                best_tp_pct = tp_pct
+                result["most_efficient_3p"] = tp_pct
+                result["most_efficient_3pa"] = tpa
+                result["most_efficient_3pm"] = tpm
+                result["most_efficient_3p_player"] = name
+            if tp_pct < worst_tp_pct:
+                worst_tp_pct = tp_pct
+                result["least_efficient_3p"] = tp_pct
+                result["least_efficient_3pa"] = tpa
+                result["least_efficient_3pm"] = tpm
+                result["least_efficient_3p_player"] = name
+
+        if minutes > 0:
+            points_rate = points / minutes
+            if points_rate < worst_points_rate:
+                worst_points_rate = points_rate
+                result["least_efficient_points"] = points_rate
+                result["least_efficient_points_player"] = name
+
+    return result
+
+
+def clock_seconds_left(clock_display):
+    if not clock_display:
+        return None
+    if ":" in clock_display:
+        mins, secs = clock_display.split(":")
+        return int(mins) * 60 + float(secs)
+    return float(clock_display)
+
+
+def detect_clutch_game(plays, margin=CLUTCH_MARGIN):
+    for play in plays:
+        period = play.get("period", {})
+        if period.get("number") != 4:
+            continue
+
+        seconds_left = clock_seconds_left(play.get("clock", {}).get("displayValue"))
+        if seconds_left is None or seconds_left > 300:
+            continue
+
+        home_score = int(play["homeScore"])
+        away_score = int(play["awayScore"])
+        if abs(home_score - away_score) <= margin:
+            return True
+    return False
+
+
+def detect_comeback_game(home_score, away_score, home_competitor, away_competitor, deficit=COMEBACK_DEFICIT):
+    home_running = 0
+    away_running = 0
+
+    for period in range(1, 5):
+        for quarter in home_competitor.get("linescores", []):
+            if quarter["period"] == period:
+                home_running = home_running + int(quarter["value"])
+        for quarter in away_competitor.get("linescores", []):
+            if quarter["period"] == period:
+                away_running = away_running + int(quarter["value"])
+
+        score_diff = home_running - away_running
+
+        if home_score > away_score and score_diff <= -deficit:
+            return True
+        if away_score > home_score and score_diff >= deficit:
+            return True
+
+    return False
+
+
+def map_quarters_from_competitor(competitor):
+    q1 = QuarterScore(cumulative_score=0, points_scored=0)
+    q2 = QuarterScore(cumulative_score=0, points_scored=0)
+    q3 = QuarterScore(cumulative_score=0, points_scored=0)
+    q4 = QuarterScore(cumulative_score=0, points_scored=0)
+
+    for quarter in competitor.get("linescores", []):
+        period = quarter["period"]
+        points = int(quarter["value"])
+        if period == 1:
+            q1.points_scored = points
+            q1.cumulative_score = points
+        if period == 2:
+            q2.points_scored = points
+            q2.cumulative_score = q1.cumulative_score + points
+        if period == 3:
+            q3.points_scored = points
+            q3.cumulative_score = q2.cumulative_score + points
+        if period == 4:
+            q4.points_scored = points
+            q4.cumulative_score = q3.cumulative_score + points
+
+    return q1, q2, q3, q4
+
+
+def map_to_nba_game_summary(event, summary):
     competitors = event["competitions"][0]["competitors"]
 
     home_competitor = None
@@ -50,14 +350,10 @@ def map_to_nba_game_summary(event, summary):
     away_team_score = int(away_competitor["score"])
     total_score = home_team_score + away_team_score
 
-    if event["season"]["slug"] == "post-season":
-        post_season = True
-    else:
-        post_season = False
+    post_season = event["season"]["slug"] == "post-season"
+    post_season_impact = post_season
 
-    # --- From summary boxscore: match home/away teams ---
     boxscore_teams = summary["boxscore"]["teams"]
-
     home_box = None
     away_box = None
     for team in boxscore_teams:
@@ -66,22 +362,16 @@ def map_to_nba_game_summary(event, summary):
         if team["homeAway"] == "away":
             away_box = team
 
-    # --- Team shooting stats (same idea as your stats1 / stats2 code) ---
     homeFGM = 0
     homeFGA = 0
     homeTPM = 0
     homeTPA = 0
     home_turnovers = 0
-
     for stat in home_box["statistics"]:
         if stat["name"] == "fieldGoalsMade-fieldGoalsAttempted":
-            homeFGM, homeFGA = stat["displayValue"].split("-")
-            homeFGM = int(homeFGM)
-            homeFGA = int(homeFGA)
+            homeFGM, homeFGA = parse_made_attempted(stat["displayValue"])
         if stat["name"] == "threePointFieldGoalsMade-threePointFieldGoalsAttempted":
-            homeTPM, homeTPA = stat["displayValue"].split("-")
-            homeTPM = int(homeTPM)
-            homeTPA = int(homeTPA)
+            homeTPM, homeTPA = parse_made_attempted(stat["displayValue"])
         if stat["name"] == "turnovers":
             home_turnovers = int(stat["displayValue"])
 
@@ -90,16 +380,11 @@ def map_to_nba_game_summary(event, summary):
     awayTPM = 0
     awayTPA = 0
     away_turnovers = 0
-
     for stat in away_box["statistics"]:
         if stat["name"] == "fieldGoalsMade-fieldGoalsAttempted":
-            awayFGM, awayFGA = stat["displayValue"].split("-")
-            awayFGM = int(awayFGM)
-            awayFGA = int(awayFGA)
+            awayFGM, awayFGA = parse_made_attempted(stat["displayValue"])
         if stat["name"] == "threePointFieldGoalsMade-threePointFieldGoalsAttempted":
-            awayTPM, awayTPA = stat["displayValue"].split("-")
-            awayTPM = int(awayTPM)
-            awayTPA = int(awayTPA)
+            awayTPM, awayTPA = parse_made_attempted(stat["displayValue"])
         if stat["name"] == "turnovers":
             away_turnovers = int(stat["displayValue"])
 
@@ -123,65 +408,24 @@ def map_to_nba_game_summary(event, summary):
     else:
         away_three_p_percent = 0
 
-    # --- Quarter scores (TODO: you fill this in) ---
-    # home_competitor["linescores"] has one entry per quarter
-    # each entry has displayValue = points in that quarter
-    empty_quarter = QuarterScore(cumulative_score=0, points_scored=0)
+    home_q1, home_q2, home_q3, home_q4 = map_quarters_from_competitor(home_competitor)
+    away_q1, away_q2, away_q3, away_q4 = map_quarters_from_competitor(away_competitor)
 
-    home_q1 = empty_quarter
-    home_q2 = empty_quarter
-    home_q3 = empty_quarter
-    home_q4 = empty_quarter
+    home_players = find_players_block(summary, home_box["team"]["id"])
+    away_players = find_players_block(summary, away_box["team"]["id"])
 
-    for quarters in home_box["linescores"]:
-        if quarters["period"] == 1:
-            home_q1.cumulative_score, home_q1.points_scored = int(quarters["value"]),int(quarters["value"])
-        if quarters["period"] == 2:
-            home_q2.cumulative_score, home_q2.points_scored = int(quarters["value"])+home_q1.cumulative_score,int(quarters["value"])
-        if quarters["period"] == 3:
-            home_q2.cumulative_score, home_q2.points_scored = int(quarters["value"])+home_q2.cumulative_score,int(quarters["value"])
-        if quarters["period"] == 4:
-            home_q2.cumulative_score, home_q2.points_scored = int(quarters["value"])+home_q3.cumulative_score,int(quarters["value"])
+    home_impact = build_team_impact(home_players)
+    away_impact = build_team_impact(away_players)
 
-    away_q1 = empty_quarter
-    away_q2 = empty_quarter
-    away_q3 = empty_quarter
-    away_q4 = empty_quarter
+    home_eff = build_shooting_efficiency(home_players)
+    away_eff = build_shooting_efficiency(away_players)
 
-    for quarters in away_box["linescores"]:
-        if quarters["period"] == 1:
-            away_q1.cumulative_score, away_q1.points_scored = int(quarters["value"]),int(quarters["value"])
-        if quarters["period"] == 2:
-            away_q2.cumulative_score, away_q2.points_scored = int(quarters["value"])+away_q1.cumulative_score,int(quarters["value"])
-        if quarters["period"] == 3:
-            away_q2.cumulative_score, away_q2.points_scored = int(quarters["value"])+away_q2.cumulative_score,int(quarters["value"])
-        if quarters["period"] == 4:
-            away_q2.cumulative_score, away_q2.points_scored = int(quarters["value"])+away_q3.cumulative_score,int(quarters["value"])
-
-    # --- Player stats like top scorer (TODO: you fill this in) ---
-    empty_impact = TeamImpactStats(
-        top_points=0,
-        top_rebounds=0,
-        top_assists=0,
-        top_steals=0,
-        top_blocks=0,
-        top_scorer="",
-        top_rebounder="",
-        top_assister="",
-        top_stealer="",
-        top_blocker="",
-        impact_points=0.0,
-        impact_points_player="",
-        impact_rebounds=0.0,
-        impact_rebounds_player="",
-        impact_assists=0.0,
-        impact_assists_player="",
+    plays = summary.get("plays") or []
+    clutch_game = detect_clutch_game(plays)
+    comeback_game = detect_comeback_game(
+        home_team_score, away_team_score, home_competitor, away_competitor
     )
 
-    home_impact = empty_impact
-    away_impact = empty_impact
-
-    # --- Build TeamAnalytics objects ---
     home_analytics = TeamAnalytics(
         q1=home_q1,
         q2=home_q2,
@@ -194,24 +438,7 @@ def map_to_nba_game_summary(event, summary):
         three_pa=homeTPA,
         three_pm=homeTPM,
         turnover=home_turnovers,
-        most_efficient_fg=0.0,
-        most_efficient_fga=0,
-        most_efficient_fgm=0,
-        most_efficient_fg_player="",
-        most_efficient_3p=0.0,
-        most_efficient_3pa=0,
-        most_efficient_3pm=0,
-        most_efficient_3p_player="",
-        least_efficient_fg=0.0,
-        least_efficient_fga=0,
-        least_efficient_fgm=0,
-        least_efficient_fg_player="",
-        least_efficient_3p=0.0,
-        least_efficient_3pa=0,
-        least_efficient_3pm=0,
-        least_efficient_3p_player="",
-        least_efficient_points=0.0,
-        least_efficient_points_player="",
+        **home_eff,
     )
 
     away_analytics = TeamAnalytics(
@@ -226,58 +453,57 @@ def map_to_nba_game_summary(event, summary):
         three_pa=awayTPA,
         three_pm=awayTPM,
         turnover=away_turnovers,
-        most_efficient_fg=0.0,
-        most_efficient_fga=0,
-        most_efficient_fgm=0,
-        most_efficient_fg_player="",
-        most_efficient_3p=0.0,
-        most_efficient_3pa=0,
-        most_efficient_3pm=0,
-        most_efficient_3p_player="",
-        least_efficient_fg=0.0,
-        least_efficient_fga=0,
-        least_efficient_fgm=0,
-        least_efficient_fg_player="",
-        least_efficient_3p=0.0,
-        least_efficient_3pa=0,
-        least_efficient_3pm=0,
-        least_efficient_3p_player="",
-        least_efficient_points=0.0,
-        least_efficient_points_player="",
+        **away_eff,
     )
 
-    game = NBAGameSummary(
+    return NBAGameSummary(
+        event_id=event.get("id", ""),
         home_team=home_team,
         away_team=away_team,
         home_team_score=home_team_score,
         away_team_score=away_team_score,
         total_score=total_score,
-        clutch_game=False,
-        comeback_game=False,
+        clutch_game=clutch_game,
+        comeback_game=comeback_game,
         post_season=post_season,
-        post_season_impact=False,
+        post_season_impact=post_season_impact,
         home_impact=home_impact,
         away_impact=away_impact,
         home_analytics=home_analytics,
         away_analytics=away_analytics,
     )
 
-    return game
+
+def get_finished_events(scoreboard_data):
+    """Events on the scoreboard that already have a score."""
+    finished = []
+    for event in scoreboard_data.get("events", []):
+        competitors = event["competitions"][0]["competitors"]
+        scores = [int(c["score"]) for c in competitors]
+        if scores[0] > 0 or scores[1] > 0:
+            finished.append(event)
+    return finished
+
+
+def fetch_all_games(scoreboard_data=None):
+    """Map every finished game on the scoreboard to NBAGameSummary."""
+    if scoreboard_data is None:
+        scoreboard_data = fetch_nba_data()
+
+    games = []
+    for event in get_finished_events(scoreboard_data):
+        summary = fetch_summary(event["id"])
+        games.append(map_to_nba_game_summary(event, summary))
+    return games
 
 
 # Run this file to test: python -m fetchers.nba_data
 if __name__ == "__main__":
-    data = fetch_nba_data()
-    events = data["events"]
-    first_game = events[0]
-    event_id = first_game["id"]
+    games = fetch_all_games()
+    if not games:
+        print("No games with scores on the scoreboard yet.")
+        exit()
 
-    summary = fetch_summary(event_id)
-    game = map_to_nba_game_summary(first_game, summary)
-
-    print(game.home_team, "vs", game.away_team)
-    print(game.home_team_score, "-", game.away_team_score)
-    print("Home FG%:", game.home_analytics.fg_percent)
-    with open("fetchers/nba_data.json", "w") as f:
-        json.dump(first_game, f, indent=2)
-
+    print(f"Loaded {len(games)} finished game(s).\n")
+    for game in games:
+        print(game.away_team, "@", game.home_team, "—", game.away_team_score, "-", game.home_team_score)

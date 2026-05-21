@@ -48,12 +48,15 @@ def evaluate_nba_game(game, config):
     if game.total_score > config.high_total:
         reasons.append(f"High total score: {game.total_score}")
 
-    # Rule 4: Games where favorite team is playing
-    playing = {game.home_team, game.away_team}
-    fav_teams = set(config.favorite_teams)
-    matched_teams = playing & fav_teams
+    # Rule 4: Games where favorite team is playing (substring match, e.g. "Warriors")
+    matched_teams = []
+    for team_name in (game.home_team, game.away_team):
+        for fav in config.favorite_teams:
+            if fav.lower() in team_name.lower():
+                matched_teams.append(team_name)
+                break
     if matched_teams:
-        reasons.append(f"Favorite team playing: {', '.join(sorted(matched_teams))}")
+        reasons.append(f"Favorite team playing: {', '.join(sorted(set(matched_teams)))}")
 
     # Rule 5: Either team's leading scorer cleared the high-points bar
     for team_name, impact in (
@@ -66,10 +69,12 @@ def evaluate_nba_game(game, config):
             )
 
     # Rule 6: Favorite player appears in notable roles (either team)
-    notable = set(_all_notable_players(game))
-    for player in config.favorite_players:
-        if player in notable:
-            reasons.append(f"Favorite player featured: {player}")
+    notable = _all_notable_players(game)
+    for fav_player in config.favorite_players:
+        for name in notable:
+            if fav_player.lower() in name.lower():
+                reasons.append(f"Favorite player featured: {name}")
+                break
 
     # Rule 7: Post Season games
     if game.post_season:

@@ -111,3 +111,5 @@ class NBAGameSummary:
     home_analytics: TeamAnalytics
     away_analytics: TeamAnalytics
 
+    event_id: str = ""
+

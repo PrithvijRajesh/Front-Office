@@ -7,63 +7,79 @@ from email.mime.text import MIMEText
 
 from agent.decision import evaluate_nba_game
 from agent.summarizer import summarize_game
-from config import load_nba_config
-from fetchers.nba_data import fetch_all_games
+from config import load_league_config
+from fetchers.nba_data import SUPPORTED_LEAGUES, fetch_all_games_for_leagues
 from preferences.learning import is_personalization_active
 
 
-def espn_game_link(event_id):
-    """Public box score / game page (always works in a browser)."""
-    return f"https://www.espn.com/nba/game/_/gameId/{event_id}"
+def espn_game_link(event_id, league="nba"):
+    return f"https://www.espn.com/{league}/game/_/gameId/{event_id}"
 
 
 def advanced_stats_link(event_id):
-    """Local app during 11:59–12:10 AM, or ESPN if APP_BASE_URL is unset."""
     base = os.environ.get("APP_BASE_URL", "").strip().rstrip("/")
     if base:
         return f"{base}/stats?game={event_id}"
-    return espn_game_link(event_id)
+    return None
 
 
-def build_digest_body(games, config):
-    personalized = is_personalization_active()
+def build_digest_body(games_by_league=None, leagues=SUPPORTED_LEAGUES):
+    if games_by_league is None:
+        games_by_league = {}
+        for league in leagues:
+            from fetchers.nba_data import fetch_all_games
+
+            games_by_league[league] = fetch_all_games(league=league)
+
     lines = [
-        "NBA Front Office — nightly summary",
+        "Front Office — nightly summary (NBA & WNBA)",
         "",
     ]
 
-    if personalized:
-        lines.append(
-            "Showing games matched to your learned preferences "
-            "(teams/players you often view advanced stats for)."
-        )
-    else:
-        lines.append("Showing notable games from today's scoreboard.")
-    lines.append("")
+    total_shown = 0
+    for league in leagues:
+        games = games_by_league.get(league, [])
+        config = load_league_config(league)
+        personalized = is_personalization_active(league)
+        label = league.upper()
 
-    shown = 0
-    for game in games:
-        important, reasons = evaluate_nba_game(game, config)
-        if personalized and not important:
-            continue
-
-        shown += 1
-        lines.append(f"{shown}. {game.away_team} @ {game.home_team}")
-        lines.append(f"   Final: {game.away_team_score} - {game.home_team_score}")
-        if important:
-            lines.append(f"   {summarize_game(game, reasons)}")
+        lines.append(f"========== {label} ==========")
+        if personalized:
+            lines.append("Filtered to your learned preferences for this league.")
         else:
-            lines.append("   Summary: standard game night.")
-        lines.append(f"   View advanced stats: {advanced_stats_link(game.event_id)}")
-        lines.append(f"   ESPN box score: {espn_game_link(game.event_id)}")
+            lines.append("Showing notable finished games.")
         lines.append("")
 
-    if shown == 0:
+        shown = 0
+        for game in games:
+            important, reasons = evaluate_nba_game(game, config)
+            if personalized and not important:
+                continue
+
+            shown += 1
+            total_shown += 1
+            lines.append(f"{shown}. {game.away_team} @ {game.home_team}")
+            lines.append(f"   Final: {game.away_team_score} - {game.home_team_score}")
+            if important:
+                lines.append(f"   {summarize_game(game, reasons)}")
+            else:
+                lines.append("   Summary: standard game night.")
+            link = advanced_stats_link(game.event_id)
+            if link:
+                lines.append(f"   View advanced stats: {link}")
+            lines.append(f"   ESPN box score: {espn_game_link(game.event_id, game.league)}")
+            lines.append("")
+
+        if shown == 0:
+            lines.append(f"No {label} games matched tonight.")
+            lines.append("")
+
+    if total_shown == 0:
         lines.append("No games matched your preferences tonight.")
     else:
         lines.append(
-            "In the app, open a game and choose to view advanced stats — "
-            "that helps us learn your favorite teams and players."
+            "Open the app during 11:59 PM – 12:10 AM and view advanced stats "
+            "to refine NBA and WNBA favorites separately."
         )
 
     return "\n".join(lines)
@@ -82,12 +98,18 @@ def send_nightly_email(games=None, config=None):
         )
 
     if games is None:
-        games = fetch_all_games()
-    if config is None:
-        config = load_nba_config()
+        all_games = fetch_all_games_for_leagues()
+        games_by_league = {}
+        for game in all_games:
+            games_by_league.setdefault(game.league, []).append(game)
+        body = build_digest_body(games_by_league)
+    else:
+        games_by_league = {}
+        for game in games:
+            games_by_league.setdefault(game.league, []).append(game)
+        body = build_digest_body(games_by_league)
 
-    body = build_digest_body(games, config)
-    subject = "NBA nightly summary — Front Office"
+    subject = "NBA & WNBA nightly summary — Front Office"
 
     message = MIMEMultipart()
     message["From"] = email_from

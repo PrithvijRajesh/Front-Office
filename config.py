@@ -23,9 +23,34 @@ DEFAULT_NBA_CONFIG = NBAConfig(
     high_total=240,
 )
 
+DEFAULT_WNBA_CONFIG = NBAConfig(
+    favorite_teams=[],
+    favorite_players=[],
+    clutch_margin=5,
+    comeback_deficit=15,
+    high_points=25,
+    high_total=170,
+)
+
+DEFAULT_LEAGUE_CONFIGS = {
+    "nba": DEFAULT_NBA_CONFIG,
+    "wnba": DEFAULT_WNBA_CONFIG,
+}
+
 
 def load_nba_config():
-    """Config from user preference file (manual + learned from stat views)."""
-    from preferences.learning import build_nba_config
+    from preferences.learning import build_league_config
 
-    return build_nba_config()
+    return build_league_config("nba")
+
+
+def load_wnba_config():
+    from preferences.learning import build_league_config
+
+    return build_league_config("wnba")
+
+
+def load_league_config(league):
+    from preferences.learning import build_league_config
+
+    return build_league_config(league)

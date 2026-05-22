@@ -10,33 +10,47 @@ from models.nba_games import (
     TeamImpactStats,
 )
 
-baseURL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
+SUPPORTED_LEAGUES = ("nba", "wnba")
 
 CLUTCH_MARGIN = 5
 COMEBACK_DEFICIT = 15
 
 
-def fetch_nba_data():
-    url = f"{baseURL}/scoreboard"
+def espn_base_url(league):
+    if league not in SUPPORTED_LEAGUES:
+        raise ValueError(f"Unsupported league: {league!r}. Use one of {SUPPORTED_LEAGUES}")
+    return f"https://site.api.espn.com/apis/site/v2/sports/basketball/{league}"
+
+
+def fetch_scoreboard(league="nba"):
+    url = f"{espn_base_url(league)}/scoreboard"
     response = requests.get(url)
     response.raise_for_status()
     return response.json()
 
 
-def fetch_summary(event_id):
-    url = f"{baseURL}/summary?event={event_id}"
+def fetch_nba_data():
+    """Backward-compatible alias for NBA scoreboard."""
+    return fetch_scoreboard("nba")
+
+
+def fetch_summary(event_id, league="nba"):
+    url = f"{espn_base_url(league)}/summary?event={event_id}"
     response = requests.get(url)
     response.raise_for_status()
     return response.json()
 
 
 def parse_minutes(minutes_string):
-    if not minutes_string or minutes_string == "--":
+    if not minutes_string or minutes_string in ("--", "-"):
         return 0.0
     if ":" in minutes_string:
         parts = minutes_string.split(":")
         return int(parts[0]) + int(parts[1]) / 60.0
-    return float(minutes_string)
+    try:
+        return float(minutes_string)
+    except ValueError:
+        return 0.0
 
 
 def parse_made_attempted(display_value):
@@ -333,7 +347,7 @@ def map_quarters_from_competitor(competitor):
     return q1, q2, q3, q4
 
 
-def map_to_nba_game_summary(event, summary):
+def map_to_nba_game_summary(event, summary, league="nba"):
     competitors = event["competitions"][0]["competitors"]
 
     home_competitor = None
@@ -457,7 +471,6 @@ def map_to_nba_game_summary(event, summary):
     )
 
     return NBAGameSummary(
-        event_id=event.get("id", ""),
         home_team=home_team,
         away_team=away_team,
         home_team_score=home_team_score,
@@ -471,6 +484,8 @@ def map_to_nba_game_summary(event, summary):
         away_impact=away_impact,
         home_analytics=home_analytics,
         away_analytics=away_analytics,
+        league=league,
+        event_id=event.get("id", ""),
     )
 
 
@@ -485,25 +500,42 @@ def get_finished_events(scoreboard_data):
     return finished
 
 
-def fetch_all_games(scoreboard_data=None):
+def fetch_all_games(scoreboard_data=None, league="nba"):
     """Map every finished game on the scoreboard to NBAGameSummary."""
     if scoreboard_data is None:
-        scoreboard_data = fetch_nba_data()
+        scoreboard_data = fetch_scoreboard(league)
 
     games = []
     for event in get_finished_events(scoreboard_data):
-        summary = fetch_summary(event["id"])
-        games.append(map_to_nba_game_summary(event, summary))
+        summary = fetch_summary(event["id"], league=league)
+        games.append(map_to_nba_game_summary(event, summary, league=league))
     return games
+
+
+def fetch_all_games_for_leagues(leagues=SUPPORTED_LEAGUES):
+    """Fetch finished games for multiple leagues (e.g. NBA + WNBA)."""
+    all_games = []
+    for league in leagues:
+        all_games.extend(fetch_all_games(league=league))
+    return all_games
 
 
 # Run this file to test: python -m fetchers.nba_data
 if __name__ == "__main__":
-    games = fetch_all_games()
+    games = fetch_all_games_for_leagues()
     if not games:
         print("No games with scores on the scoreboard yet.")
         exit()
 
     print(f"Loaded {len(games)} finished game(s).\n")
     for game in games:
-        print(game.away_team, "@", game.home_team, "—", game.away_team_score, "-", game.home_team_score)
+        print(
+            f"[{game.league.upper()}]",
+            game.away_team,
+            "@",
+            game.home_team,
+            "—",
+            game.away_team_score,
+            "-",
+            game.home_team_score,
+        )

@@ -1,4 +1,4 @@
-# Main: real NBA games from ESPN, personalized filtering, preference learning.
+# Main: real NBA & WNBA games from ESPN, personalized filtering, preference learning.
 
 import argparse
 import sys
@@ -12,21 +12,38 @@ from agent.analysis import analyze_nba_game
 from agent.decision import evaluate_nba_game
 from agent.email_digest import build_digest_body, send_nightly_email
 from agent.summarizer import summarize_game
-from config import load_nba_config
-from fetchers.nba_data import fetch_all_games
+from config import load_league_config
+from fetchers.nba_data import SUPPORTED_LEAGUES, fetch_all_games, fetch_all_games_for_leagues
 from preferences.learning import is_personalization_active, preference_summary
 from preferences.store import record_advanced_stat_view
 
 
-def should_show_game(game, config):
-    """Before enough stat views, show every finished game; after that, filter."""
+def parse_leagues_arg(league_arg):
+    if league_arg == "both":
+        return SUPPORTED_LEAGUES
+    if league_arg in SUPPORTED_LEAGUES:
+        return (league_arg,)
+    raise ValueError(f"Unknown league: {league_arg}. Use nba, wnba, or both.")
+
+
+def fetch_games_for_leagues(leagues):
+    if len(leagues) == len(SUPPORTED_LEAGUES):
+        return fetch_all_games_for_leagues(leagues)
+    games = []
+    for league in leagues:
+        games.extend(fetch_all_games(league=league))
+    return games
+
+
+def should_show_game(game):
+    config = load_league_config(game.league)
     important, _ = evaluate_nba_game(game, config)
-    if is_personalization_active():
+    if is_personalization_active(game.league):
         return important
     return True
 
 
-def run_game_flow(games, config):
+def run_game_flow(games):
     if not games:
         print("No finished games on the scoreboard right now.")
         return
@@ -36,14 +53,15 @@ def run_game_flow(games, config):
 
     shown = 0
     for game in games:
-        if not should_show_game(game, config):
+        if not should_show_game(game):
             continue
 
+        config = load_league_config(game.league)
         important, reasons = evaluate_nba_game(game, config)
         shown += 1
 
         print("\n" + "=" * 50)
-        print(f"Game {shown}: {game.away_team} @ {game.home_team}")
+        print(f"[{game.league.upper()}] Game {shown}: {game.away_team} @ {game.home_team}")
         print(f"Final: {game.away_team_score} - {game.home_team_score}")
 
         if important:
@@ -59,8 +77,8 @@ def run_game_flow(games, config):
         user_response = input("\nView advanced stats? (yes/no): ").strip().lower()
         if user_response in ("yes", "y"):
             record_advanced_stat_view(game)
-            config = load_nba_config()
-            print("\nPreferences updated from your history.")
+            config = load_league_config(game.league)
+            print("\nPreferences updated for", game.league.upper() + ".")
             print(preference_summary())
             print("\nGame analysis:")
             for line in analyze_nba_game(game):
@@ -75,7 +93,13 @@ def run_game_flow(games, config):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="NBA Front Office")
+    parser = argparse.ArgumentParser(description="Front Office — NBA & WNBA")
+    parser.add_argument(
+        "--league",
+        choices=["nba", "wnba", "both"],
+        default="both",
+        help="Which league(s) to load (default: both)",
+    )
     parser.add_argument(
         "--email",
         action="store_true",
@@ -99,12 +123,12 @@ def main():
         run_web()
         return
 
-    config = load_nba_config()
-    games = fetch_all_games()
+    leagues = parse_leagues_arg(args.league)
+    games = fetch_games_for_leagues(leagues)
 
     if args.email:
         try:
-            send_nightly_email(games, config)
+            send_nightly_email(games)
             print("Nightly email sent.")
         except RuntimeError as e:
             print(e, file=sys.stderr)
@@ -112,10 +136,13 @@ def main():
         return
 
     if args.email_preview:
-        print(build_digest_body(games, config))
+        games_by_league = {}
+        for game in games:
+            games_by_league.setdefault(game.league, []).append(game)
+        print(build_digest_body(games_by_league, leagues=leagues))
         return
 
-    run_game_flow(games, config)
+    run_game_flow(games)
 
 
 if __name__ == "__main__":

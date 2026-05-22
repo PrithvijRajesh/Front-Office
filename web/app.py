@@ -21,8 +21,8 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from agent.analysis import analyze_nba_game
 from agent.decision import evaluate_nba_game
 from agent.summarizer import summarize_game
-from config import load_nba_config
-from fetchers.nba_data import fetch_all_games
+from config import load_league_config
+from fetchers.nba_data import fetch_all_games_for_leagues
 from preferences.learning import is_personalization_active, preference_summary
 from preferences.store import record_advanced_stat_view
 
@@ -57,7 +57,7 @@ def require_window():
 
 def load_games():
     global _games_by_id, _games_loaded_at
-    games = fetch_all_games()
+    games = fetch_all_games_for_leagues()
     _games_by_id = {g.event_id: g for g in games if g.event_id}
     _games_loaded_at = datetime.now()
     return list(_games_by_id.values())
@@ -69,9 +69,10 @@ def get_games():
     return list(_games_by_id.values())
 
 
-def should_show_game(game, config):
+def should_show_game(game):
+    config = load_league_config(game.league)
     important, _ = evaluate_nba_game(game, config)
-    if is_personalization_active():
+    if is_personalization_active(game.league):
         return important
     return True
 
@@ -94,11 +95,11 @@ HOME_HTML = """
 </head>
 <body>
   <h1>NBA Front Office</h1>
-  <p class="meta">Available 11:59 PM – 12:10 AM · {{ games|length }} game(s) tonight</p>
+  <p class="meta">Available 11:59 PM – 12:10 AM · {{ games|length }} game(s) (NBA & WNBA)</p>
   <pre class="prefs">{{ prefs }}</pre>
   {% for item in items %}
   <div class="game">
-    <h2>{{ item.game.away_team }} @ {{ item.game.home_team }}</h2>
+    <h2>[{{ item.game.league|upper }}] {{ item.game.away_team }} @ {{ item.game.home_team }}</h2>
     <p>Final: {{ item.game.away_team_score }} – {{ item.game.home_team_score }}</p>
     {% if item.summary %}<p>{{ item.summary }}</p>{% endif %}
     <a class="button" href="/stats?game={{ item.game.event_id }}">View advanced stats</a>
@@ -162,11 +163,11 @@ def check_window():
 
 @app.route("/")
 def home():
-    config = load_nba_config()
     items = []
     for game in get_games():
-        if not should_show_game(game, config):
+        if not should_show_game(game):
             continue
+        config = load_league_config(game.league)
         important, reasons = evaluate_nba_game(game, config)
         summary = summarize_game(game, reasons) if important else ""
         items.append({"game": game, "summary": summary})
@@ -191,7 +192,7 @@ def stats():
 
     record_advanced_stat_view(game)
     lines = analyze_nba_game(game)
-    title = f"{game.away_team} @ {game.home_team}"
+    title = f"[{game.league.upper()}] {game.away_team} @ {game.home_team}"
 
     return render_template_string(
         STATS_HTML,

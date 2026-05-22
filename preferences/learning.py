@@ -1,9 +1,9 @@
-# Infer favorite teams/players from advanced-stat view history.
+# Infer favorite teams/players from advanced-stat view history (per league).
 
 from collections import Counter
 
-from config import DEFAULT_NBA_CONFIG, NBAConfig
-from preferences.store import load_preferences
+from config import DEFAULT_LEAGUE_CONFIGS, NBAConfig
+from preferences.store import LEAGUES, load_preferences
 
 MIN_VIEWS_FOR_PERSONALIZATION = 5
 TEAM_INFERENCE_MIN_VIEWS = 5
@@ -37,13 +37,18 @@ def infer_favorite_players(views, min_views=3):
     return [name for name, count in counts.most_common() if count >= min_views]
 
 
-def build_nba_config():
-    """NBAConfig from defaults + manual overrides + learned preferences."""
-    prefs = load_preferences()
-    views = prefs.get("advanced_stat_views", [])
+def build_league_config(league):
+    """NBAConfig for one league from defaults + manual + learned preferences."""
+    if league not in LEAGUES:
+        raise ValueError(f"Unknown league: {league!r}")
 
-    favorite_teams = list(prefs.get("manual_favorite_teams", []))
-    favorite_players = list(prefs.get("manual_favorite_players", []))
+    prefs = load_preferences()
+    league_prefs = prefs[league]
+    views = league_prefs.get("advanced_stat_views", [])
+    defaults = DEFAULT_LEAGUE_CONFIGS[league]
+
+    favorite_teams = list(league_prefs.get("manual_favorite_teams", []))
+    favorite_players = list(league_prefs.get("manual_favorite_players", []))
 
     if len(views) >= MIN_VIEWS_FOR_PERSONALIZATION:
         for team in infer_favorite_teams(views):
@@ -56,27 +61,44 @@ def build_nba_config():
     return NBAConfig(
         favorite_teams=favorite_teams,
         favorite_players=favorite_players,
-        clutch_margin=DEFAULT_NBA_CONFIG.clutch_margin,
-        comeback_deficit=DEFAULT_NBA_CONFIG.comeback_deficit,
-        high_points=DEFAULT_NBA_CONFIG.high_points,
-        high_total=DEFAULT_NBA_CONFIG.high_total,
+        clutch_margin=defaults.clutch_margin,
+        comeback_deficit=defaults.comeback_deficit,
+        high_points=defaults.high_points,
+        high_total=defaults.high_total,
     )
 
 
-def is_personalization_active():
-    return len(load_preferences().get("advanced_stat_views", [])) >= MIN_VIEWS_FOR_PERSONALIZATION
+def build_nba_config():
+    return build_league_config("nba")
+
+
+def build_wnba_config():
+    return build_league_config("wnba")
+
+
+def is_personalization_active(league):
+    return view_count_for_league(league) >= MIN_VIEWS_FOR_PERSONALIZATION
+
+
+def view_count_for_league(league):
+    return len(load_preferences()[league].get("advanced_stat_views", []))
 
 
 def preference_summary():
-    config = build_nba_config()
-    views = len(load_preferences().get("advanced_stat_views", []))
-    lines = [
-        f"Advanced stat views recorded: {views}",
-        f"Personalized filtering: {'on' if is_personalization_active() else 'off'} "
-        f"(turns on after {MIN_VIEWS_FOR_PERSONALIZATION} views)",
-    ]
-    if config.favorite_teams:
-        lines.append(f"Favorite teams (manual + inferred): {', '.join(config.favorite_teams)}")
-    if config.favorite_players:
-        lines.append(f"Favorite players (manual + inferred): {', '.join(config.favorite_players)}")
-    return "\n".join(lines)
+    lines = ["Your preferences (per league):", ""]
+    for league in LEAGUES:
+        config = build_league_config(league)
+        views = view_count_for_league(league)
+        label = league.upper()
+        lines.append(f"--- {label} ---")
+        lines.append(f"  Advanced stat views: {views}")
+        lines.append(
+            f"  Personalized filtering: {'on' if is_personalization_active(league) else 'off'} "
+            f"(after {MIN_VIEWS_FOR_PERSONALIZATION} views)"
+        )
+        if config.favorite_teams:
+            lines.append(f"  Favorite teams: {', '.join(config.favorite_teams)}")
+        if config.favorite_players:
+            lines.append(f"  Favorite players: {', '.join(config.favorite_players)}")
+        lines.append("")
+    return "\n".join(lines).strip()

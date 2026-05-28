@@ -61,13 +61,13 @@ def summarize_game(game, reasons):
         else:
             summary = f"{loser_top}'s {loser_top_points} point game goes to waste as the {loser} were unable to hang with the {winner} in the close {winner_score} - {loser_score} battle"
     elif any("High total score: " in r for r in reasons):
-        summary = f"The {winner} vs. {loser} game was shootout where the {winner}, led by {winner_top}'s {winner_top_points} point game, beat the {loser}, led by {loser_top}'s point game, {winner_score} - {loser_score}"
-    elif f"Post Season game":
+        summary = f"The {winner} vs. {loser} game was shootout where the {winner}, led by {winner_top}'s {winner_top_points} point game, beat the {loser}, led by {loser_top}'s {loser_top_points} point game, {winner_score} - {loser_score}"
+    elif "Post Season game" in reasons:
         if winner_top_points >= loser_top_points:
             summary = f"The {winner} beat the {loser} {winner_score} - {loser_score} in a playoff game led by {winner_top}'s {winner_top_points} point game"
         else:
             summary = f"The {loser} lose their playoff game to the {winner} {loser_score} - {winner_score}, despite {loser_top}'s {loser_top_points} points game"
-    elif f"Game has post season implication" in reasons:
+    elif "Game has post season implications" in reasons:
         if winner_top_points >= loser_top_points:
             summary = f"The {winner} get a crucial {winner_score} - {loser_score} win against the {loser}, on the back of {winner_top}'s {winner_top_points} points"
         else:
